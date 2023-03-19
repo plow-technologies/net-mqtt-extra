@@ -1,0 +1,106 @@
+cabal-version:       2.4
+name:                net-mqtt-extra
+version:             0.3.5.1
+license:             BSD-3-Clause
+license-file:        LICENSE
+author:              Plow Technologies
+maintainer:          alberto.valverde@plowtech.net
+copyright:           2023 Plow Technologies LLC
+category:            Network
+extra-source-files:  CHANGELOG.md
+
+common warnings
+    ghc-options:
+      -Wall
+      -Werror
+      -Wincomplete-record-updates
+      -Wincomplete-uni-patterns
+      -Wredundant-constraints
+      -- -Wunused-packages
+
+library
+  import:           warnings
+  exposed-modules:
+    Network.MQTT.Connection
+    Network.MQTT.Connection.FilterTree
+  build-depends:
+    base >=4.13.0.0,
+    deepseq,
+    stm,
+    containers,
+    unordered-containers,
+    net-mqtt >= 0.8.6,
+    crypton-connection,
+    bytestring,
+    network-uri,
+    retry,
+    exceptions,
+    unliftio,
+    async,
+    text,
+    stm-chans,
+    hashable,
+    split
+
+  hs-source-dirs:   src
+  default-language: Haskell2010
+
+
+executable net-mqtt-extra-demo
+  import:           warnings
+  main-is:          Demo.hs
+  hs-source-dirs:   examples
+  build-depends:    base >=4.13.0.0, net-mqtt-extra, async, random
+  ghc-options:      -threaded 
+  default-language: Haskell2010
+
+test-suite net-mqtt-extra-integration-test
+  import:           warnings
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs: integration-test
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
+  build-depends:
+    base,
+    bytestring,
+    net-mqtt-extra,
+    async,
+    text,
+    plow-log,
+    plow-log-async,
+    hspec,
+    typed-process,
+    temporary,
+    filepath,
+    stm,
+    process,
+    unix,
+    HUnit,
+    retry,
+    exceptions,
+    port-utils,
+    mtl,
+    random,
+    containers
+
+test-suite net-mqtt-extra-test
+  import:           warnings
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs: test
+  other-modules:
+    Network.MQTT.Connection.FilterTreeSpec
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
+  build-depends:
+    base,
+    net-mqtt,
+    net-mqtt-extra,
+    QuickCheck,
+    hspec,
+    containers
