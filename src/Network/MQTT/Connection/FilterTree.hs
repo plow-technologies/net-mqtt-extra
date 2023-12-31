@@ -9,7 +9,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Network.MQTT.Connection.FilterTree
   ( FilterTree,
@@ -62,14 +61,17 @@ data FilterTree a
       -- ^ + matches
       !(Maybe a)
       -- ^ leaf matches
-      !(M.HashMap Filter (FilterTree a))
+      !(M.HashMap FilterKey (FilterTree a))
   deriving (Eq, Ord, Show, Generic, Functor, NFData, Foldable, Traversable)
 
-instance NFData Filter where
-  rnf x = rnf (unFilter x)
+newtype FilterKey = FilterKey {unFilterKey :: Filter}
+  deriving (Eq, Ord, Show, Generic)
 
-instance Hashable Filter where
-  hashWithSalt s = hashWithSalt s . unFilter
+instance NFData FilterKey where
+  rnf (FilterKey x) = rnf (unFilter x)
+
+instance Hashable FilterKey where
+  hashWithSalt s = hashWithSalt s . unFilter . unFilterKey
 
 -- | Returns all the 'Filter's and the elems in the 'FilterTree' in
 -- no particular order
@@ -80,7 +82,7 @@ toList = go []
       maybe [] (\x -> [(joinParts ("#" : parts), x)]) mx
         <> maybe [] (go ("+" : parts)) my
         <> maybe [] (\x -> [(joinParts parts, x)]) mz
-        <> concatMap (\(t, fs) -> go (t : parts) fs) (M.toList m)
+        <> concatMap (\(FilterKey t, fs) -> go (t : parts) fs) (M.toList m)
 
     joinParts :: [Filter] -> Filter
     joinParts =
@@ -126,7 +128,7 @@ match topic = go (Filter.split topic)
                 <> concatMap (go rest) (lookupL t xs)
                 <> concatMap (go rest) (maybeToList y)
 
-    lookupL x = maybeToList . M.lookup x
+    lookupL x = maybeToList . M.lookup (FilterKey x)
     maybeToList = maybe [] (: [])
 
 -- | An empty 'FilterTree'
@@ -140,7 +142,7 @@ member f = go (Filter.split f)
     go [] !(FilterTree _ _ z _) = isJust z
     go ("#" : _) !(FilterTree x _ _ _) = isJust x
     go ("+" : rest) !(FilterTree _ y _ _) = maybe False (go rest) y
-    go (f' : rest) !(FilterTree _ _ _ m) = maybe False (go rest) (M.lookup f' m)
+    go (f' : rest) !(FilterTree _ _ _ m) = maybe False (go rest) (M.lookup (FilterKey f') m)
 
 -- | Insert a (Filter, a) pair in the 'FilterTree'. If a value already exists for
 -- a 'Filter' it will be replaced
@@ -164,7 +166,7 @@ insertWith combine f o = go (Filter.split f)
         y' = Just $ go rest $ fromMaybe empty y
     go (f' : rest) !(FilterTree x y z m) = FilterTree x y z m'
       where
-        m' = M.alter (Just . go rest . fromMaybe empty) f' m
+        m' = M.alter (Just . go rest . fromMaybe empty) (FilterKey f') m
 
     combineMaybe :: Maybe a -> Maybe a -> Maybe a
     combineMaybe Nothing Nothing = Nothing
@@ -205,7 +207,7 @@ update upd f = go (Filter.split f)
         x
         y
         z
-        (M.alter (goM rest) f' m)
+        (M.alter (goM rest) (FilterKey f') m)
 
     goM rest = fmap (go rest) >=> trim
     trim m

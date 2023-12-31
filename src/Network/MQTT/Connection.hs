@@ -8,7 +8,6 @@
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 -- |
 -- Module      : Network.MQTT.Connection
@@ -73,7 +72,7 @@ import qualified Control.Concurrent.STM.TBMChan as TBMChan
 import qualified Control.Concurrent.STM.TChan as TChan
 import Control.Concurrent.STM.TMVar
 import Control.Concurrent.STM.TVar
-import Control.DeepSeq (NFData (..), ($!!))
+import Control.DeepSeq (NFData (..), liftRnf, rwhnf, ($!!))
 import Control.Exception
   ( BlockedIndefinitelyOnSTM (..),
     Exception,
@@ -341,19 +340,40 @@ data RoutingEntry = RoutingEntry
     reSubOptions :: !SubOptions,
     reSubProps :: ![Property]
   }
-  deriving (Generic, NFData)
+  deriving (Generic)
 
-instance NFData SubOptions where
-  rnf (SubOptions a b c d) = rnfRetainHandling a `seq` rnf b `seq` rnf c `seq` rnfQos d `seq` ()
+instance NFData RoutingEntry where
+  rnf (RoutingEntry a b c) =
+    rnf a `seq` rnfSubOptions b `seq` liftRnf rnfProp c `seq` ()
     where
-      rnfRetainHandling !_ = ()
-      rnfQos !_ = ()
-
-deriving instance Generic Property
-
-deriving instance NFData Property
-
-deriving instance Ord Property
+      rnfSubOptions (SubOptions w x y z) = rwhnf w `seq` rnf x `seq` rnf y `seq` rwhnf z `seq` ()
+      rnfProp (PropPayloadFormatIndicator x) = rnf x
+      rnfProp (PropMessageExpiryInterval x) = rnf x
+      rnfProp (PropContentType x) = rnf x
+      rnfProp (PropResponseTopic x) = rnf x
+      rnfProp (PropCorrelationData x) = rnf x
+      rnfProp (PropSubscriptionIdentifier x) = rnf x
+      rnfProp (PropSessionExpiryInterval x) = rnf x
+      rnfProp (PropAssignedClientIdentifier x) = rnf x
+      rnfProp (PropServerKeepAlive x) = rnf x
+      rnfProp (PropAuthenticationMethod x) = rnf x
+      rnfProp (PropAuthenticationData x) = rnf x
+      rnfProp (PropRequestProblemInformation x) = rnf x
+      rnfProp (PropWillDelayInterval x) = rnf x
+      rnfProp (PropRequestResponseInformation x) = rnf x
+      rnfProp (PropResponseInformation x) = rnf x
+      rnfProp (PropServerReference x) = rnf x
+      rnfProp (PropReasonString x) = rnf x
+      rnfProp (PropReceiveMaximum x) = rnf x
+      rnfProp (PropTopicAliasMaximum x) = rnf x
+      rnfProp (PropTopicAlias x) = rnf x
+      rnfProp (PropMaximumQoS x) = rnf x
+      rnfProp (PropRetainAvailable x) = rnf x
+      rnfProp (PropUserProperty x y) = rnf x `seq` rnf y `seq` ()
+      rnfProp (PropMaximumPacketSize x) = rnf x
+      rnfProp (PropWildcardSubscriptionAvailable x) = rnf x
+      rnfProp (PropSubscriptionIdentifierAvailable x) = rnf x
+      rnfProp (PropSharedSubscriptionAvailable x) = rnf x
 
 data SubscribeCmd
   = Subscribe Filter SubOptions [Property]
@@ -559,7 +579,7 @@ sendSubscribeRequests conn@Connection {connSettings} allReqs =
 
 sendSubscribeRequests2 :: Settings -> MQTT.MQTTClient -> [(Filter, (SubOptions, [Property]))] -> IO ()
 sendSubscribeRequests2 connSettings client allReqs = do
-  let groupedReqs = NE.groupAllWith (\(_, (_, ps)) -> ps) allReqs
+  let groupedReqs = NE.groupAllWith (\(_, (_, ps)) -> show ps) allReqs
   forM_ groupedReqs $ \reqs@((_, (_, subProps)) NE.:| _) ->
     forM_ (chunksOf subChunkSize (NE.toList reqs)) $ \chunk -> do
       let topOpts = map (\(t, (opts, _)) -> (t, opts)) chunk
@@ -569,7 +589,7 @@ sendSubscribeRequests2 connSettings client allReqs = do
 
 sendUnsubscribeRequests :: HasCallStack => Connection -> [(Filter, (SubOptions, [Property]))] -> IO ()
 sendUnsubscribeRequests conn@Connection {connSettings} allReqs = do
-  let groupedReqs = NE.groupAllWith (\(_, (_, ps)) -> ps) allReqs
+  let groupedReqs = NE.groupAllWith (\(_, (_, ps)) -> show ps) allReqs
   forM_ groupedReqs $ \reqs@((_, (_, subProps)) NE.:| _) ->
     forM_ (chunksOf subChunkSize (NE.toList reqs)) $ \chunk -> do
       let tops = map fst chunk
