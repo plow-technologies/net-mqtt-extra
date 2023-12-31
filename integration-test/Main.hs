@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -16,8 +17,12 @@ import Control.Concurrent.Async
 import Control.Concurrent.STM
 import qualified Control.Concurrent.STM.TChan as TChan
 import Control.Exception (IOException, throwIO)
+import Control.Monad
 import Control.Monad.Catch
+#if !MIN_VERSION_base(4,18,0)
 import Control.Monad.Cont
+#endif
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Retry
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.Functor.Contravariant (contramap)
