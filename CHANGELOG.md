@@ -1,5 +1,8 @@
 # Revision history for net-mqtt-extra
 
+## 0.3.6.0 -- 2023-12-31
+* First public version
+
 ## 0.3.5.1 -- 2023-11-30
 * Retry any IOException when reconnecting as timeouts come from the socket
   sometimes, not only System.Timeout.timeout
