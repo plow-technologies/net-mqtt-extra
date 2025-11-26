@@ -7,6 +7,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -fno-warn-unrecognised-pragmas #-}
+
+{- HLINT ignore "Avoid restricted function" -}
+{-ignore threadDelay because the only use in this module does not overflow 32
+ - bits and ignore hPutStrLn because it is used in a helper to display plow-log
+ - exceptions -}
 
 -- |
 -- Module      : Network.MQTT.Connection
@@ -57,6 +63,7 @@ module Network.MQTT.Connection
     readChannelSTM,
     publish,
     onReconnect,
+    getConnectionError,
     module ReExport,
 
     -- * Internal
@@ -928,6 +935,27 @@ withClient Connection{connClientRef, connSettings} f = do
     blockedIndefToClosedConnErr BlockedIndefinitelyOnSTM = throwIO connIsClosedError
     pubSubTimeoutError = PubSubTimeout callStack (brokerUri connSettings)
     connIsClosedError = ConnectionIsClosed callStack (brokerUri connSettings)
+
+-- | Return any unrecoverable connection error that may have been produced in the
+-- async thread that handles re-connections.
+-- This function will block (perhaps forever!) until an exception is actually
+-- produced or the connection is gracefully closed by `closeConnection` or
+-- `closeConnectionWith` so it should be called in an async thread to handle it
+-- or in the main thread to end the program, for example
+-- @
+--     withConnection .. $ \conn ->
+--       withAsync (doStuffWithConn conn) $ \thread -> do
+--          link thread -- so we die if doStuffWithConn throws
+--          maybe (pure ()) throwIO =<< getConnection conn -- wait until conn is closed or produces an unrecoverable error
+-- @
+getConnectionError :: Connection -> IO (Maybe SomeException)
+getConnectionError Connection{connClientRef} =
+  atomically $
+    readTMVar connClientRef >>= \case
+      Open _ -> retry
+      Closed -> pure Nothing
+      Errored e -> pure $ Just e
+      New -> retry
 
 linkedAsync :: IO a -> IO (Async a)
 linkedAsync io = uninterruptibleMask_ $ do
