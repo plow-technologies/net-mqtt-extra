@@ -3,6 +3,12 @@
 ## 0.3.6.0 -- 2023-12-31
 * First public version
 
+## 0.4.0.0
+* Add a `Maybe Int` argument to `subscribeWith*` and `withAsyncSubscribeWith*`
+  to specify the size of the an optional thread-pool
+  to process subscription messages concurrently. If `Nothing` no thread-pool
+  will be used (old behavior)
+
 ## 0.3.8.1
 * Added getConnectionError to get any unrecoverable errors seen by the
   thread that performs reconnections

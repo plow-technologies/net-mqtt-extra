@@ -8,6 +8,10 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
+-- This is a test so don't be so linty
+{- HLINT ignore "Avoid restricted function" -}
+{- HLINT ignore "Avoid restricted identifiers" -}
+
 module Main (main, spec) where
 
 import Control.Concurrent
@@ -78,13 +82,27 @@ spec = do
             MQTT._pubTopic req `shouldBe` "test/topic"
           Nothing -> expectationFailure "subscriber didn't get message"
 
+  it "messages are only processed once" $ \(_, tracer) ->
+    withTestConnection tracer $ \subConn ->
+      withTestConnection tracer $ \pubConn -> do
+        var <- newIORef (0 :: Int)
+        let fset = Map.singleton "test/topic" (MQTT.subOptions, [])
+        MQTT.withAsyncSubscribeWith subConn 5 fset Nothing (const (atomicModifyIORef' var (\c -> (c + 1, ())))) $ do
+          MQTT.publish pubConn "test/topic" "hello" False MQTT.QoS0 []
+          eventually $
+            readIORef var `shouldReturn` 1
+          eventually $
+            readIORef var `shouldReturn` 1
+          eventually $
+            readIORef var `shouldReturn` 1
+
   it "can update subscriptions" $ \(_, tracer) ->
     withTestConnection tracer $ \subConn ->
       withTestConnection tracer $ \pubConn -> do
         var <- newEmptyMVar
         chan <- TChan.newTChanIO
         let fset = Map.singleton "test/topic" (MQTT.subOptions, [])
-        mReq <- MQTT.withAsyncSubscribeWith2 subConn fset (Just chan) (putMVar var) $ do
+        mReq <- MQTT.withAsyncSubscribeWith2 subConn 1 fset (Just chan) (putMVar var) $ do
           MQTT.publish pubConn "test/topic" "hello" False MQTT.QoS0 []
           r1 <- timeout 1_000_000 $ takeMVar var
           let onReset = MQTT.publish pubConn "test/topic2" "hello" False MQTT.QoS0 []
@@ -105,7 +123,7 @@ spec = do
         var <- newEmptyMVar
         chan <- TChan.newTChanIO
         let fset = Map.singleton "test/topic" (MQTT.subOptions, [])
-        mReq <- MQTT.withAsyncSubscribeWith2 subConn fset (Just chan) (putMVar var) $ do
+        mReq <- MQTT.withAsyncSubscribeWith2 subConn 1 fset (Just chan) (putMVar var) $ do
           MQTT.publish pubConn "test/topic" "hello" False MQTT.QoS0 []
           r1 <- timeout 1_000_000 $ takeMVar var
           let onSubscribed = MQTT.publish pubConn "test/topic2" "hello" False MQTT.QoS0 []

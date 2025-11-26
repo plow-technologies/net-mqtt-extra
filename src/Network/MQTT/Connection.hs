@@ -93,6 +93,7 @@ import Control.Exception
   )
 import Control.Monad
 import Control.Monad.Catch (Handler (..), MonadMask, mask, onException)
+import Control.Monad.Cont (ContT (ContT), evalContT)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.STM
 import Control.Retry
@@ -433,21 +434,32 @@ readChannelSTM = readTVar . unChannel >=> TBMChan.readTBMChan
 subscribe :: (HasCallStack) => Connection -> Filter -> (PublishRequest -> IO ()) -> IO ()
 subscribe conn topic f = do
   chan <- subscribeChanWith conn (Map.singleton topic (MQTT.subOptions, [])) Nothing
-  fix $ \loop -> readChannel chan >>= maybe (pure ()) (\pr -> f pr >> loop)
+  subscribeLoop 1 chan f
 
 -- | Same as 'subscribe' but can override defaults
-subscribeWith :: (HasCallStack) => IO () -> Connection -> FilterSet -> Maybe (TChan.TChan FilterSet) -> (PublishRequest -> IO ()) -> IO ()
-subscribeWith onSubscribed conn topics topicsChan f = do
+subscribeWith :: (HasCallStack) => Int -> IO () -> Connection -> FilterSet -> Maybe (TChan.TChan FilterSet) -> (PublishRequest -> IO ()) -> IO ()
+subscribeWith numThreads onSubscribed conn topics topicsChan f = do
   chan <- subscribeChanWith conn topics topicsChan
   onSubscribed
-  fix $ \loop -> readChannel chan >>= maybe (pure ()) (\pr -> f pr >> loop)
+  subscribeLoop numThreads chan f
 
 -- | Same as 'subscribe' but can override defaults
-subscribeWith2 :: (HasCallStack) => IO () -> Connection -> FilterSet -> Maybe (TChan.TChan SubscribeCmd) -> (PublishRequest -> IO ()) -> IO ()
-subscribeWith2 onInitialSubscribe conn topics cmdsChan f = do
+subscribeWith2 :: (HasCallStack) => Int -> IO () -> Connection -> FilterSet -> Maybe (TChan.TChan SubscribeCmd) -> (PublishRequest -> IO ()) -> IO ()
+subscribeWith2 numThreads onInitialSubscribe conn topics cmdsChan f = do
   chan <- subscribeChanWith2 conn topics cmdsChan
   onInitialSubscribe
-  fix $ \loop -> readChannel chan >>= maybe (pure ()) (\pr -> f pr >> loop)
+  subscribeLoop numThreads chan f
+
+subscribeLoop :: Int -> Channel -> (PublishRequest -> IO a) -> IO ()
+subscribeLoop numThreads chan f = case numThreads of
+  n | n > 0 -> evalContT $ do
+    threads <- replicateM (numThreads - 1) (ContT (withAsync loop))
+    liftIO $ do
+      mapM_ link threads
+      loop
+  n -> throwIO $ userError $ "Invalid number of threads: " <> show n
+  where
+    loop = readChannel chan >>= maybe (pure ()) (\pr -> f pr >> loop)
 
 -- | Subscribe to a topic/filter and return a 'Channel'. Use 'readChannel' or 'readChannelSTM' to
 -- poll messages from it.
@@ -628,14 +640,15 @@ filterListToSet = Map.fromList . map (\(a, re) -> (a, (reSubOptions re, reSubPro
 withAsyncSubscribeWith ::
   (HasCallStack) =>
   Connection ->
+  Int ->
   FilterSet ->
   Maybe (TChan.TChan FilterSet) ->
   (PublishRequest -> IO ()) ->
   IO a ->
   IO a
-withAsyncSubscribeWith conn topics topicsChan sub f = do
+withAsyncSubscribeWith conn numThreads topics topicsChan sub f = do
   v <- newEmptyTMVarIO
-  withAsync (subscribeWith (atomically (putTMVar v ())) conn topics topicsChan sub) $ \t -> do
+  withAsync (subscribeWith numThreads (atomically (putTMVar v ())) conn topics topicsChan sub) $ \t -> do
     link t
     when (failFast (connSettings conn)) $
       atomically (takeTMVar v)
@@ -645,14 +658,15 @@ withAsyncSubscribeWith conn topics topicsChan sub f = do
 withAsyncSubscribeWith2 ::
   (HasCallStack) =>
   Connection ->
+  Int ->
   FilterSet ->
   Maybe (TChan.TChan SubscribeCmd) ->
   (PublishRequest -> IO ()) ->
   IO a ->
   IO a
-withAsyncSubscribeWith2 conn topics cmdsChan sub f = do
+withAsyncSubscribeWith2 conn numThreads topics cmdsChan sub f = do
   v <- newEmptyTMVarIO
-  withAsync (subscribeWith2 (atomically (putTMVar v ())) conn topics cmdsChan sub) $ \t -> do
+  withAsync (subscribeWith2 numThreads (atomically (putTMVar v ())) conn topics cmdsChan sub) $ \t -> do
     link t
     when (failFast (connSettings conn)) $
       atomically (takeTMVar v)
@@ -664,7 +678,7 @@ withAsyncSubscribeWith2 conn topics cmdsChan sub f = do
 -- If 'failFast' is True, the continuation will not be called until the broker has acknowledged the suscription, blocking until this happens
 withAsyncSubscribe :: Connection -> Filter -> (PublishRequest -> IO ()) -> IO b -> IO b
 withAsyncSubscribe conn topic =
-  withAsyncSubscribeWith conn (Map.singleton topic (MQTT.subOptions, [])) Nothing
+  withAsyncSubscribeWith conn 1 (Map.singleton topic (MQTT.subOptions, [])) Nothing
 
 -- | Execute an action when a dropped connection is re-established. The action
 -- is only called on the rising edge when the state transitions from "not
