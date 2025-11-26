@@ -42,6 +42,7 @@ library
     text,
     stm-chans,
     hashable,
+    data-default-class,
     split
 
   hs-source-dirs:   src
