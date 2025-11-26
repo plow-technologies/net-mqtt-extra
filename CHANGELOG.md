@@ -3,6 +3,10 @@
 ## 0.3.6.0 -- 2023-12-31
 * First public version
 
+## 0.3.7.0
+* Add Wunused-packages to the list of warnings
+* Add username and password to the Settings
+
 ## 0.3.6.0
 * GHC 9.6.6 upgrade
 

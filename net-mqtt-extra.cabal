@@ -1,6 +1,6 @@
 cabal-version:       2.4
 name:                net-mqtt-extra
-version:             0.3.6.0
+version:             0.3.7.0
 license:             BSD-3-Clause
 license-file:        LICENSE
 author:              Plow Technologies
@@ -16,7 +16,7 @@ common warnings
       -Wincomplete-record-updates
       -Wincomplete-uni-patterns
       -Wredundant-constraints
-      -- -Wunused-packages
+      -Wunused-packages
 
 library
   import:           warnings
@@ -50,7 +50,7 @@ executable net-mqtt-extra-demo
   import:           warnings
   main-is:          Demo.hs
   hs-source-dirs:   examples
-  build-depends:    base >=4.13.0.0, net-mqtt-extra, async, random
+  build-depends:    base >=4.13.0.0, net-mqtt-extra
   ghc-options:      -threaded 
   default-language: Haskell2010
 
@@ -82,7 +82,6 @@ test-suite net-mqtt-extra-integration-test
     retry,
     exceptions,
     port-utils,
-    mtl,
     random,
     containers
 

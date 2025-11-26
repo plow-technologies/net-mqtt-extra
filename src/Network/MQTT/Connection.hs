@@ -137,41 +137,45 @@ import UnliftIO.Exception (catchAny, handleAny, tryAny)
 
 -- | Settings to create a new 'Connection'
 data Settings = Settings
-  { -- | The MQTT broker URI
-    brokerUri :: URI,
-    -- | False if a session should be reused.
-    cleanSession :: Bool,
-    -- | LastWill message to be sent by broker if connection is lost with us
-    lwt :: IO (Maybe LastWill),
-    -- | Protocol to use for the connection.
-    protocol :: ProtocolLevel,
-    -- | Properties to send to the broker in the CONNECT packet.
-    connProps :: [Property],
-    -- | Connection timeout (microseconds)
-    connectTimeout :: Int,
-    -- | TLS Settings for secure connections
-    tlsSettings :: TLSSettings,
-    -- | The retry policy when connecting or re-connecting to the broker
-    connectRetryPolicy :: RetryPolicyM IO,
-    -- | Callback called with traces of the library's operation
-    tracer :: ConnectionTrace -> IO (),
-    -- | Attempt to connect to broker on 'newConnection' synchronously and fail
-    -- fast if the broker isn't up
-    failFast :: Bool,
-    -- | Optional timeout (microseconds) for 'publish' / 'subscribe' when waiting for
-    -- connection to come back up
-    pubSubTimeout :: Maybe Int,
-    -- | Time between pings (microseconds)
-    pingPeriod :: Int,
-    -- | Time in microseconds for which there must be no incoming packets before the broker is considered dead.
-    -- Should be more than the ping period plus the maximum expected ping round trip time.
-    pingPatience :: Int,
-    -- | Length of the bounded queue for incoming messages per subscription.
-    -- When the queue is full QoS0 messages will be dropped (this will be logged) and QoS1&2
-    -- messages will block until processed. This will cause
-    -- back-pressure and accumulate in the queue in the broker, what happens
-    -- when queue fills up there is up to the broker (mosquitto drops them silently)
-    maxQueuedMessages :: Int
+  { brokerUri :: URI
+  -- ^ The MQTT broker URI
+  , cleanSession :: Bool
+  -- ^ False if a session should be reused.
+  , username :: Maybe String
+  -- ^ Optional username (parsed from the URI)
+  , password :: Maybe String
+  -- ^ Optional password (parsed from the URI)
+  , lwt :: IO (Maybe LastWill)
+  -- ^ LastWill message to be sent by broker if connection is lost with us
+  , protocol :: ProtocolLevel
+  -- ^ Protocol to use for the connection.
+  , connProps :: [Property]
+  -- ^ Properties to send to the broker in the CONNECT packet.
+  , connectTimeout :: Int
+  -- ^ Connection timeout (microseconds)
+  , tlsSettings :: TLSSettings
+  -- ^ TLS Settings for secure connections
+  , connectRetryPolicy :: RetryPolicyM IO
+  -- ^ The retry policy when connecting or re-connecting to the broker
+  , tracer :: ConnectionTrace -> IO ()
+  -- ^ Callback called with traces of the library's operation
+  , failFast :: Bool
+  -- ^ Attempt to connect to broker on 'newConnection' synchronously and fail
+  -- fast if the broker isn't up
+  , pubSubTimeout :: Maybe Int
+  -- ^ Optional timeout (microseconds) for 'publish' / 'subscribe' when waiting for
+  -- connection to come back up
+  , pingPeriod :: Int
+  -- ^ Time between pings (microseconds)
+  , pingPatience :: Int
+  -- ^ Time in microseconds for which there must be no incoming packets before the broker is considered dead.
+  -- Should be more than the ping period plus the maximum expected ping round trip time.
+  , maxQueuedMessages :: Int
+  -- ^ Length of the bounded queue for incoming messages per subscription.
+  -- When the queue is full QoS0 messages will be dropped (this will be logged) and QoS1&2
+  -- messages will block until processed. This will cause
+  -- back-pressure and accumulate in the queue in the broker, what happens
+  -- when queue fills up there is up to the broker (mosquitto drops them silently)
   }
   deriving (Generic)
 
@@ -179,20 +183,22 @@ data Settings = Settings
 defaultSettings :: URI -> Settings
 defaultSettings brokerUri =
   Settings
-    { brokerUri,
-      cleanSession = True,
-      lwt = pure Nothing,
-      protocol = Protocol50,
-      connProps = mempty,
-      connectTimeout = 10_000_000,
-      tlsSettings = TLSSettingsSimple False False False def,
-      connectRetryPolicy = constantDelay 30_000_000,
-      tracer = printConnectionTrace,
-      failFast = False,
-      pubSubTimeout = Nothing,
-      pingPeriod = 30_000_000,
-      pingPatience = 90_000_000,
-      maxQueuedMessages = 100_000
+    { brokerUri
+    , cleanSession = True
+    , username = Nothing
+    , password = Nothing
+    , lwt = pure Nothing
+    , protocol = Protocol50
+    , connProps = mempty
+    , connectTimeout = 10_000_000
+    , tlsSettings = TLSSettingsSimple False False False def
+    , connectRetryPolicy = constantDelay 30_000_000
+    , tracer = printConnectionTrace
+    , failFast = False
+    , pubSubTimeout = Nothing
+    , pingPeriod = 30_000_000
+    , pingPatience = 90_000_000
+    , maxQueuedMessages = 100_000
     }
 
 data ConnectionError
@@ -304,20 +310,20 @@ printConnectionTrace = bracket_ (takeMVar printLock) (putMVar printLock ()) . T.
 -- down and will attempt to re-connect. Note that when the connection is down,
 -- 'subscribe' and 'publish' will block until it is up again.
 data Connection = Connection
-  { -- | The currently MQTTClient. It is a TMVar because we want to ensure that
-    -- only the keepConnected thread is in charge of performing the actual
-    -- (re)connections to avoid the thundering-herd problem (in which several
-    -- threads would be trying to establish a connection simultaneously).
-    -- Theese semantics should not be mixed with those of a mutex (else
-    -- isConnectedSTM will cease to work properly)
-    connClientRef :: TMVar Client,
-    connRoutingTree :: TVar RoutingTree,
-    -- | The 'Settings' used to configure this connection
-    connSettings :: Settings,
-    -- | A reference to the async thread the performs the re-connections. This
-    -- thread must be the only producer of connClientRef
-    connKeepConnectedThread :: Async (),
-    connOnConnectListeners :: TVar (IO ())
+  { connClientRef :: TMVar Client
+  -- ^ The currently MQTTClient. It is a TMVar because we want to ensure that
+  -- only the keepConnected thread is in charge of performing the actual
+  -- (re)connections to avoid the thundering-herd problem (in which several
+  -- threads would be trying to establish a connection simultaneously).
+  -- Theese semantics should not be mixed with those of a mutex (else
+  -- isConnectedSTM will cease to work properly)
+  , connRoutingTree :: TVar RoutingTree
+  , connSettings :: Settings
+  -- ^ The 'Settings' used to configure this connection
+  , connKeepConnectedThread :: Async ()
+  -- ^ A reference to the async thread the performs the re-connections. This
+  -- thread must be the only producer of connClientRef
+  , connOnConnectListeners :: TVar (IO ())
   }
 
 -- | The 'Settings' used to create a 'Connection'
@@ -336,9 +342,9 @@ type FilterSet = Map.Map Filter (SubOptions, [Property])
 type RoutingTree = FilterTree RoutingEntry
 
 data RoutingEntry = RoutingEntry
-  { reSubs :: !(Set.HashSet Subscription),
-    reSubOptions :: !SubOptions,
-    reSubProps :: ![Property]
+  { reSubs :: !(Set.HashSet Subscription)
+  , reSubOptions :: !SubOptions
+  , reSubProps :: ![Property]
   }
   deriving (Generic)
 
@@ -381,8 +387,8 @@ data SubscribeCmd
   | ResetSubscriptions FilterSet
 
 data Subscription = Subscription
-  { subChan :: {-# UNPACK #-} !(TBMChan.TBMChan PublishRequest),
-    subUpdater :: {-# UNPACK #-} !(Async ())
+  { subChan :: {-# UNPACK #-} !(TBMChan.TBMChan PublishRequest)
+  , subUpdater :: {-# UNPACK #-} !(Async ())
   }
   deriving (Generic)
 
@@ -393,7 +399,7 @@ instance Eq Subscription where
   (==) = (==) `on` subUpdater
 
 instance Hashable Subscription where
-  hashWithSalt s Subscription {subUpdater} = hashWithSalt s subUpdater
+  hashWithSalt s Subscription{subUpdater} = hashWithSalt s subUpdater
 
 -- | A Channel where incoming messages can be read from.
 newtype Channel = Channel
@@ -471,7 +477,7 @@ subscribeChanWith conn topics (Just chan) = do
 
 -- | Same as 'subscribeChan' but can override defaults
 subscribeChanWith2 :: (HasCallStack) => Connection -> FilterSet -> Maybe (TChan.TChan SubscribeCmd) -> IO Channel
-subscribeChanWith2 conn@Connection {connSettings} topics mTopicsChan =
+subscribeChanWith2 conn@Connection{connSettings} topics mTopicsChan =
   uninterruptibleMask $ \restore -> mdo
     onReady <- newEmptyTMVarIO
     subUpdater <- restore $ async $ case mTopicsChan of
@@ -479,7 +485,7 @@ subscribeChanWith2 conn@Connection {connSettings} topics mTopicsChan =
       Nothing -> forever (threadDelay 300_000_000)
     (sub', chanRef', sendReqs') <- restore $ atomically $ do
       subChan <- TBMChan.newTBMChan (maxQueuedMessages connSettings)
-      let sub = Subscription {subChan, subUpdater}
+      let sub = Subscription{subChan, subUpdater}
       chanRef <- newTVar subChan
       sendReqs <- updateRoutingTree conn sub $ ResetSubscriptions topics
       putTMVar onReady ()
@@ -501,13 +507,13 @@ subscribeChanWith2 conn@Connection {connSettings} topics mTopicsChan =
         sendRequests `catchAny` const (pure ())
 
     -- It is important that a finalizer never throws so catchAny
-    onChannelGarbageCollected sub@Subscription {subUpdater} = handleAny (const (pure ())) $ do
+    onChannelGarbageCollected sub@Subscription{subUpdater} = handleAny (const (pure ())) $ do
       tracer connSettings $ ChannelGarbageCollected (brokerUri connSettings)
       cancel subUpdater
       join $ atomically $ updateRoutingTree conn sub $ ResetSubscriptions mempty
 
 updateRoutingTree :: (HasCallStack) => Connection -> Subscription -> SubscribeCmd -> STM (IO ())
-updateRoutingTree conn@Connection {connRoutingTree} sub (ResetSubscriptions newFilters) = do
+updateRoutingTree conn@Connection{connRoutingTree} sub (ResetSubscriptions newFilters) = do
   routingTree <- readTVar connRoutingTree
   let fsBefore = filterTreeToSet routingTree
       fsAfter = filterTreeToSet routingTree'
@@ -515,7 +521,7 @@ updateRoutingTree conn@Connection {connRoutingTree} sub (ResetSubscriptions newF
         FT.mapMaybe removeSubAndPrune routingTree
       removeSubAndPrune re
         | Set.null subs' = Nothing
-        | otherwise = Just re {reSubs = subs'}
+        | otherwise = Just re{reSubs = subs'}
         where
           subs' = Set.delete sub (reSubs re)
       routingTree' =
@@ -529,18 +535,18 @@ updateRoutingTree conn@Connection {connRoutingTree} sub (ResetSubscriptions newF
   pure $ do
     sendUnsubscribeRequests conn $ Map.toList (fsBefore `Map.difference` fsAfter)
     sendSubscribeRequests conn $ Map.toList (fsAfter `Map.difference` fsBefore)
-updateRoutingTree conn@Connection {connRoutingTree} sub (Subscribe t o ps) = do
+updateRoutingTree conn@Connection{connRoutingTree} sub (Subscribe t o ps) = do
   needsSubscribe <- not . FT.member t <$> readTVar connRoutingTree
   modifyTVar' connRoutingTree (insertIntoRoutingTree t sub o ps)
   pure $ when needsSubscribe $ sendSubscribeRequests conn [(t, (o, ps))]
-updateRoutingTree conn@Connection {connRoutingTree} sub (Unsubscribe t ps) = do
+updateRoutingTree conn@Connection{connRoutingTree} sub (Unsubscribe t ps) = do
   modifyTVar' connRoutingTree (FT.update upd t)
   needsUnsubscribe <- not . FT.member t <$> readTVar connRoutingTree
   pure $ when needsUnsubscribe $ sendUnsubscribeRequests conn [(t, (MQTT.subOptions {-dummy-}, ps))]
   where
     upd re
       | Set.null subs' = Nothing
-      | otherwise = Just (re {reSubs = subs'})
+      | otherwise = Just (re{reSubs = subs'})
       where
         subs' = Set.delete sub (reSubs re)
 
@@ -556,16 +562,16 @@ insertIntoRoutingTree t sub subOpts subProps =
     combine
     t
     RoutingEntry
-      { reSubs = Set.singleton sub,
-        reSubOptions = subOpts,
-        reSubProps = subProps
+      { reSubs = Set.singleton sub
+      , reSubOptions = subOpts
+      , reSubProps = subProps
       }
   where
     combine (RoutingEntry subs os ps) (RoutingEntry subs' os' ps') =
       RoutingEntry
-        { reSubs = subs `Set.union` subs',
-          reSubOptions = os `combineSubOpts` os',
-          reSubProps = L.nub (ps <> ps')
+        { reSubs = subs `Set.union` subs'
+        , reSubOptions = os `combineSubOpts` os'
+        , reSubProps = L.nub (ps <> ps')
         }
     combineSubOpts _ a = a -- FIXME
 
@@ -573,7 +579,7 @@ subChunkSize :: Int
 subChunkSize = 8 -- Max size supported by AWS IoT
 
 sendSubscribeRequests :: (HasCallStack) => Connection -> [(Filter, (SubOptions, [Property]))] -> IO ()
-sendSubscribeRequests conn@Connection {connSettings} allReqs =
+sendSubscribeRequests conn@Connection{connSettings} allReqs =
   withClient conn $ \c ->
     sendSubscribeRequests2 connSettings c allReqs
 
@@ -653,7 +659,7 @@ withAsyncSubscribe conn topic =
 -- action won't be executed immediately.
 -- This function does not block
 onReconnect :: Connection -> IO () -> IO ()
-onReconnect Connection {connOnConnectListeners} f =
+onReconnect Connection{connOnConnectListeners} f =
   atomically $ modifyTVar connOnConnectListeners (<> f)
 
 -- | Create a new 'Connection' with the given 'Settings'.
@@ -668,11 +674,11 @@ newConnection connSettings = do
   connKeepConnectedThread <- linkedAsync (keepConnected connOnConnectListeners connRoutingTree connClientRef)
   pure
     Connection
-      { connSettings,
-        connClientRef,
-        connRoutingTree,
-        connKeepConnectedThread,
-        connOnConnectListeners
+      { connSettings
+      , connClientRef
+      , connRoutingTree
+      , connKeepConnectedThread
+      , connOnConnectListeners
       }
   where
     uri = brokerUri connSettings
@@ -684,18 +690,20 @@ newConnection connSettings = do
         MQTT.connectURI
         uri
         MQTT.mqttConfig
-          { MQTT._cleanSession = cleanSession connSettings,
-            MQTT._lwt = will,
-            -- Use LowLevelCallback instead of the ordered version because the
+          { MQTT._cleanSession = cleanSession connSettings
+          , MQTT._username = username connSettings
+          , MQTT._password = password connSettings
+          , MQTT._lwt = will
+          , -- Use LowLevelCallback instead of the ordered version because the
             -- orderded version serializes calling callbacks and we
             -- don't want a full channel blocking the rest of the channels
-            MQTT._msgCB = MQTT.LowLevelCallback (messageCallback connRoutingTree),
-            MQTT._protocol = protocol connSettings,
-            MQTT._connProps = connProps connSettings,
-            MQTT._connectTimeout = connectTimeout connSettings,
-            MQTT._tlsSettings = tlsSettings connSettings,
-            MQTT._pingPeriod = pingPeriod connSettings,
-            MQTT._pingPatience = pingPatience connSettings
+            MQTT._msgCB = MQTT.LowLevelCallback (messageCallback connRoutingTree)
+          , MQTT._protocol = protocol connSettings
+          , MQTT._connProps = connProps connSettings
+          , MQTT._connectTimeout = connectTimeout connSettings
+          , MQTT._tlsSettings = tlsSettings connSettings
+          , MQTT._pingPeriod = pingPeriod connSettings
+          , MQTT._pingPatience = pingPatience connSettings
           }
 
     -- This linked async thread loops forever waiting until the TMVar is empty and
@@ -770,13 +778,13 @@ newConnection connSettings = do
     retryExceptionHandlers =
       skipAsyncExceptions
         ++ [ -- Retry any IOException
-             logAndRetry (const @_ @IOException True),
-             -- Don't retry AsyncCancelled
-             logAndRetry $ \AsyncCancelled {} -> False,
-             -- Retry any MQTTException except an invalid URI
+             logAndRetry (const @_ @IOException True)
+           , -- Don't retry AsyncCancelled
+             logAndRetry $ \AsyncCancelled{} -> False
+           , -- Retry any MQTTException except an invalid URI
              logAndRetry $ \case
-               MQTT.MQTTException err -> not $ "invalid URI scheme: " `L.isInfixOf` err
-               _ -> True
+              MQTT.MQTTException err -> not $ "invalid URI scheme: " `L.isInfixOf` err
+              _ -> True
            ]
 
     logAndRetry :: (Exception e) => (e -> Bool) -> RetryStatus -> Handler IO Bool
@@ -802,11 +810,11 @@ closeConnectionWith :: Maybe DiscoReason -> Connection -> IO ()
 closeConnectionWith
   mReason
   Connection
-    { connRoutingTree,
-      connKeepConnectedThread,
-      connSettings,
-      connClientRef,
-      connOnConnectListeners
+    { connRoutingTree
+    , connKeepConnectedThread
+    , connSettings
+    , connClientRef
+    , connOnConnectListeners
     } = do
     tracer connSettings (ConnectionClosing (brokerUri connSettings) mReason)
     cancel connKeepConnectedThread
@@ -848,7 +856,7 @@ isConnected = atomically . isConnectedSTM
 
 -- | Is the connection to the MQTT broker up? (STM version)
 isConnectedSTM :: Connection -> STM Bool
-isConnectedSTM Connection {connClientRef} = do
+isConnectedSTM Connection{connClientRef} = do
   tryReadTMVar connClientRef >>= \case
     Just (Open client) -> MQTT.isConnectedSTM client
     _ -> pure False
@@ -871,7 +879,7 @@ publish ::
   -- | Properties
   [Property] ->
   IO ()
-publish Connection {connClientRef, connSettings} a b c d@QoS0 e =
+publish Connection{connClientRef, connSettings} a b c d@QoS0 e =
   join $
     atomically $
       tryReadTMVar connClientRef >>= \case
@@ -898,7 +906,7 @@ publish conn a b c d e =
 -- If 'pubSubTimeout' is not 'Nothing' an operation times out, a 'PubSubTimeout'
 -- error will be thrown
 withClient :: (HasCallStack) => Connection -> (MQTT.MQTTClient -> IO a) -> IO a
-withClient Connection {connClientRef, connSettings} f = do
+withClient Connection{connClientRef, connSettings} f = do
   timedOutRef <- maybe (newTVarIO False) registerDelay (pubSubTimeout connSettings)
   join $ flip catch blockedIndefToClosedConnErr $ atomically $ do
     timedOut <- readTVar timedOutRef
