@@ -26,7 +26,6 @@ import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.Functor.Contravariant (contramap)
 import Data.IORef
 import qualified Data.Map.Strict as Map
-import Data.Maybe
 import qualified Data.Text as T
 import qualified Network.MQTT.Connection as MQTT
 import Network.Socket.Free (getFreePort)
@@ -54,7 +53,9 @@ mosquittoExe :: FilePath
 mosquittoExe = "mosquitto"
 
 mqttBrokerUri :: MQTT.URI
-mqttBrokerUri = fromJust $ MQTT.parseURI ("mqtt://localhost:" <> show mosquittoPort)
+mqttBrokerUri = case MQTT.parseURI ("mqtt://localhost:" <> show mosquittoPort) of
+  Just x -> x
+  Nothing -> error "shouldn't happen"
 
 main :: IO ()
 main =
@@ -71,7 +72,7 @@ spec = do
         mReq <- MQTT.withAsyncSubscribe subConn "test/topic" (putMVar var) $ do
           MQTT.publish pubConn "not-subscribed" "foo" False MQTT.QoS0 []
           MQTT.publish pubConn "test/topic" "hello" False MQTT.QoS0 []
-          timeout 1000000 $ takeMVar var
+          timeout 1_000_000 $ takeMVar var
         case mReq of
           Just req -> do
             MQTT._pubTopic req `shouldBe` "test/topic"
@@ -83,13 +84,14 @@ spec = do
         var <- newEmptyMVar
         chan <- TChan.newTChanIO
         let fset = Map.singleton "test/topic" (MQTT.subOptions, [])
-        mReq <- MQTT.withAsyncSubscribeWith subConn fset (Just chan) (putMVar var) $ do
+        mReq <- MQTT.withAsyncSubscribeWith2 subConn fset (Just chan) (putMVar var) $ do
           MQTT.publish pubConn "test/topic" "hello" False MQTT.QoS0 []
-          r1 <- timeout 1000000 $ takeMVar var
-          atomically $ TChan.writeTChan chan $ Map.singleton "test/topic2" (MQTT.subOptions, [])
-          threadDelay 500_000
-          MQTT.publish pubConn "test/topic2" "hello" False MQTT.QoS0 []
-          r2 <- timeout 1000000 $ takeMVar var
+          r1 <- timeout 1_000_000 $ takeMVar var
+          let onReset = MQTT.publish pubConn "test/topic2" "hello" False MQTT.QoS0 []
+          atomically $
+            TChan.writeTChan chan $
+              MQTT.ResetSubscriptions (Map.singleton "test/topic2" (MQTT.subOptions, [])) onReset
+          r2 <- timeout 1_000_000 $ takeMVar var
           pure ((,) <$> r1 <*> r2)
         case mReq of
           Just (req1, req2) -> do
@@ -105,11 +107,10 @@ spec = do
         let fset = Map.singleton "test/topic" (MQTT.subOptions, [])
         mReq <- MQTT.withAsyncSubscribeWith2 subConn fset (Just chan) (putMVar var) $ do
           MQTT.publish pubConn "test/topic" "hello" False MQTT.QoS0 []
-          r1 <- timeout 1000000 $ takeMVar var
-          atomically $ TChan.writeTChan chan $ MQTT.Subscribe "test/topic2" MQTT.subOptions []
-          threadDelay 500_000
-          MQTT.publish pubConn "test/topic2" "hello" False MQTT.QoS0 []
-          r2 <- timeout 1000000 $ takeMVar var
+          r1 <- timeout 1_000_000 $ takeMVar var
+          let onSubscribed = MQTT.publish pubConn "test/topic2" "hello" False MQTT.QoS0 []
+          atomically $ TChan.writeTChan chan $ MQTT.Subscribe "test/topic2" MQTT.subOptions [] onSubscribed
+          r2 <- timeout 1_000_000 $ takeMVar var
           pure ((,) <$> r1 <*> r2)
         case mReq of
           Just (req1, req2) -> do
@@ -127,7 +128,7 @@ spec = do
             MQTT.withAsyncSubscribe subConn "test/+" (putMVar var2) $ do
               MQTT.publish pubConn "not-subscribed" "foo" False MQTT.QoS0 []
               MQTT.publish pubConn "test/topic" "hello" False MQTT.QoS0 []
-              timeout 5000000 $ (,) <$> takeMVar var1 <*> takeMVar var2
+              timeout 5_000_000 $ (,) <$> takeMVar var1 <*> takeMVar var2
         case mReqs of
           Just (req1, req2) -> do
             MQTT._pubTopic req1 `shouldBe` "test/topic"
@@ -149,9 +150,9 @@ spec = do
               req1and2 <- MQTT.withAsyncSubscribe subConn "test/topic" (putMVar var2 . MQTT._pubTopic) $ do
                 MQTT.publish pubConn "not-subscribed" "foo" False MQTT.QoS0 []
                 MQTT.publish pubConn "test/topic" "hello" False MQTT.QoS0 []
-                timeout 5000000 $ (,) <$> takeMVar var1 <*> takeMVar var2
+                timeout 5_000_000 $ (,) <$> takeMVar var1 <*> takeMVar var2
               MQTT.publish pubConn "test/topic" "hello" False MQTT.QoS0 []
-              req3 <- timeout 5000000 $ takeMVar var3
+              req3 <- timeout 5_000_000 $ takeMVar var3
               pure (req1and2, req3)
         case mReqs of
           (Just (req1, req2), Just req3) -> do
@@ -160,7 +161,7 @@ spec = do
             req3 `shouldBe` "test/topic"
           _ -> expectationFailure "subscribers didn't get message"
         replicateM_ 10 (threadDelay 1000 >> performGC)
-    length (filter (\case MQTT.Unsubscribing {} -> True; _ -> False) subConnTrace) `shouldBe` 2
+    length (filter (\case MQTT.Unsubscribing{} -> True; _ -> False) subConnTrace) `shouldBe` 2
     length (filter (\case MQTT.Unsubscribing _ t -> "test/topic" `elem` t; _ -> False) subConnTrace) `shouldBe` 1
     length (filter (\case MQTT.Unsubscribing _ t -> "test/+" `elem` t; _ -> False) subConnTrace) `shouldBe` 1
 
@@ -187,7 +188,7 @@ spec = do
               traceWith tracer "re-connected to second mosquitto"
               MQTT.publish pubConn "not-subscribed" "foo" False MQTT.QoS0 []
               MQTT.publish pubConn "test/topic" "hello" False MQTT.QoS0 []
-              ret <- timeout 10000000 $ (,) <$> takeMVar var1 <*> takeMVar var2
+              ret <- timeout 1_000_0000 $ (,) <$> takeMVar var1 <*> takeMVar var2
               -- Close connections here so no more re-connections are attempted
               -- after second mosquitto is closed. Otherwise we get
               -- un-deterministic re-connection and re-subscribe attempt counts.
@@ -201,34 +202,34 @@ spec = do
         MQTT._pubTopic req2 `shouldBe` "test/topic"
       Nothing -> expectationFailure "subscribers didn't get message"
     length (filter (\case MQTT.Subscribed _ f _ -> "test/topic" `elem` f; _ -> False) subConnTrace) `shouldBe` 2
-    atomically (readTVar reconnectCountRef) `shouldReturn` 1
+    readTVarIO reconnectCountRef `shouldReturn` 1
 
   it "cannot publish on closed connection" $ \(_, tracer) -> do
     conn <- withTestConnection tracer pure
     MQTT.publish conn "test/topic" "hello" False MQTT.QoS1 []
-      `shouldThrow` \case MQTT.ConnectionIsClosed {} -> True; _ -> False
+      `shouldThrow` \case MQTT.ConnectionIsClosed{} -> True; _ -> False
 
   it "pubSubTimeout is honored" $ \(mosquitto, tracer) -> do
     killMosquitto mosquitto
     MQTT.withConnection
       (MQTT.defaultSettings mqttBrokerUri)
-        { MQTT.tracer = traceWith (contramap MQTT.showConnectionTrace tracer),
-          MQTT.connectRetryPolicy = constantDelay 30000000,
-          MQTT.failFast = False,
-          MQTT.pubSubTimeout = Just 50
+        { MQTT.tracer = traceWith (contramap MQTT.showConnectionTrace tracer)
+        , MQTT.connectRetryPolicy = constantDelay 30_000_000
+        , MQTT.failFast = False
+        , MQTT.pubSubTimeout = Just 50
         }
       $ \conn ->
         MQTT.publish conn "test/topic" "testing" False MQTT.QoS1 []
-          `shouldThrow` \case MQTT.PubSubTimeout {} -> True; _ -> False
+          `shouldThrow` \case MQTT.PubSubTimeout{} -> True; _ -> False
 
   it "can publish concurrently" $ \(_, tracer) ->
     withTestConnection tracer $ \subConn ->
       MQTT.withConnection
         (MQTT.defaultSettings mqttBrokerUri)
-          { MQTT.tracer = traceWith (contramap MQTT.showConnectionTrace tracer),
-            MQTT.connectRetryPolicy = constantDelay 30000000,
-            MQTT.failFast = False,
-            MQTT.pubSubTimeout = Just 50
+          { MQTT.tracer = traceWith (contramap MQTT.showConnectionTrace tracer)
+          , MQTT.connectRetryPolicy = constantDelay 30_000_000
+          , MQTT.failFast = False
+          , MQTT.pubSubTimeout = Just 50
           }
         $ \pubConn -> do
           var <- newIORef (0 :: Int)
@@ -236,7 +237,7 @@ spec = do
             let nums = [0 .. 5000] :: [Int]
             forConcurrently_ nums $ \x -> do
               randomIO >>= \case
-                True -> threadDelay =<< randomRIO (0, 10000)
+                True -> threadDelay =<< randomRIO (0, 10_000)
                 False -> pure ()
               qos <-
                 randomRIO @Int (1, 2) >>= \case
@@ -254,19 +255,19 @@ spec = do
         void $ async $ do
           MQTT.withConnection
             (MQTT.defaultSettings mqttBrokerUri)
-              { MQTT.tracer = traceWith (contramap MQTT.showConnectionTrace tracer),
-                MQTT.connectRetryPolicy = constantDelay 30000000,
-                MQTT.failFast = True,
-                MQTT.pubSubTimeout = Just 50,
-                MQTT.lwt =
+              { MQTT.tracer = traceWith (contramap MQTT.showConnectionTrace tracer)
+              , MQTT.connectRetryPolicy = constantDelay 30_000_000
+              , MQTT.failFast = True
+              , MQTT.pubSubTimeout = Just 50
+              , MQTT.lwt =
                   pure $
                     Just $
                       MQTT.LastWill
-                        { MQTT._willRetain = False,
-                          MQTT._willQoS = MQTT.QoS0,
-                          MQTT._willTopic = "lwt-topic",
-                          MQTT._willMsg = "my last of wills shall be honored",
-                          MQTT._willProps = []
+                        { MQTT._willRetain = False
+                        , MQTT._willQoS = MQTT.QoS0
+                        , MQTT._willTopic = "lwt-topic"
+                        , MQTT._willMsg = "my last of wills shall be honored"
+                        , MQTT._willProps = []
                         }
               }
             $ \_ -> throwIO $ userError "et tu, Brute?"
@@ -283,9 +284,9 @@ withTestConnection ::
 withTestConnection rawTracer =
   MQTT.withConnection
     (MQTT.defaultSettings mqttBrokerUri)
-      { MQTT.tracer = traceWith (contramap MQTT.showConnectionTrace rawTracer),
-        MQTT.connectRetryPolicy = constantDelay 100000,
-        MQTT.failFast = True
+      { MQTT.tracer = traceWith (contramap MQTT.showConnectionTrace rawTracer)
+      , MQTT.connectRetryPolicy = constantDelay 100_000
+      , MQTT.failFast = True
       }
 
 traceTestConnection ::
@@ -295,9 +296,9 @@ traceTestConnection tracer f = do
   ret <-
     MQTT.withConnection
       ( (MQTT.defaultSettings mqttBrokerUri)
-          { MQTT.tracer = \x -> atomicModifyIORef' logRef (\xs -> ((x : xs), ())) >> traceWith (contramap MQTT.showConnectionTrace tracer) x,
-            MQTT.connectRetryPolicy = constantDelay 100000,
-            MQTT.failFast = True
+          { MQTT.tracer = \x -> atomicModifyIORef' logRef (\xs -> (x : xs, ())) >> traceWith (contramap MQTT.showConnectionTrace tracer) x
+          , MQTT.connectRetryPolicy = constantDelay 100_000
+          , MQTT.failFast = True
           }
       )
       f
@@ -328,9 +329,9 @@ withMosquitto tracer p f = withSystemTempDirectory "mosquitto" $ \workDir -> do
   where
     mosquittoConf =
       unlines
-        [ "allow_anonymous true",
-          "port " <> show p,
-          "log_type debug"
+        [ "allow_anonymous true"
+        , "port " <> show p
+        , "log_type debug"
         ]
 
 withNamedProcessTerm ::
@@ -359,9 +360,9 @@ withProcessTermKillable config =
 eventually :: (MonadIO m, MonadMask m) => m a -> m a
 eventually =
   recovering
-    (limitRetriesByCumulativeDelay 20000000 (fullJitterBackoff 10))
-    [ const (Handler (\(_ :: HUnitFailure) -> pure True)),
-      const (Handler (\(_ :: SomeException) -> pure False))
+    (limitRetriesByCumulativeDelay 20_000_000 (fullJitterBackoff 10))
+    [ const (Handler (\(_ :: HUnitFailure) -> pure True))
+    , const (Handler (\(_ :: SomeException) -> pure False))
     ]
     . const
 
@@ -369,7 +370,7 @@ retryingTimeout :: (MonadIO m, MonadMask m) => m a -> m a
 retryingTimeout =
   recovering
     (constantDelay 10)
-    [ const (Handler (\case MQTT.PubSubTimeout {} -> pure True; _ -> pure False)),
-      const (Handler (\(_ :: SomeException) -> pure False))
+    [ const (Handler (\case MQTT.PubSubTimeout{} -> pure True; _ -> pure False))
+    , const (Handler (\(_ :: SomeException) -> pure False))
     ]
     . const

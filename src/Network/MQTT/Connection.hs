@@ -78,7 +78,6 @@ import Control.Exception
     IOException,
     SomeException,
     bracket_,
-    catch,
     handle,
     throwIO,
     toException,
@@ -96,6 +95,7 @@ import Data.Function (fix, on)
 import qualified Data.HashSet as Set
 import Data.Hashable (Hashable (..))
 import qualified Data.List as L
+import qualified Data.List.Extra as L
 import qualified Data.List.NonEmpty as NE
 import Data.List.Split (chunksOf)
 import qualified Data.Map.Strict as Map
@@ -382,9 +382,9 @@ instance NFData RoutingEntry where
       rnfProp (PropSharedSubscriptionAvailable x) = rnf x
 
 data SubscribeCmd
-  = Subscribe Filter SubOptions [Property]
-  | Unsubscribe Filter [Property]
-  | ResetSubscriptions FilterSet
+  = Subscribe Filter SubOptions [Property] (IO ())
+  | Unsubscribe Filter [Property] (IO ())
+  | ResetSubscriptions FilterSet (IO ())
 
 data Subscription = Subscription
   { subChan :: {-# UNPACK #-} !(TBMChan.TBMChan PublishRequest)
@@ -437,9 +437,9 @@ subscribeWith onSubscribed conn topics topicsChan f = do
 
 -- | Same as 'subscribe' but can override defaults
 subscribeWith2 :: (HasCallStack) => IO () -> Connection -> FilterSet -> Maybe (TChan.TChan SubscribeCmd) -> (PublishRequest -> IO ()) -> IO ()
-subscribeWith2 onSubscribed conn topics cmdsChan f = do
+subscribeWith2 onInitialSubscribe conn topics cmdsChan f = do
   chan <- subscribeChanWith2 conn topics cmdsChan
-  onSubscribed
+  onInitialSubscribe
   fix $ \loop -> readChannel chan >>= maybe (pure ()) (\pr -> f pr >> loop)
 
 -- | Subscribe to a topic/filter and return a 'Channel'. Use 'readChannel' or 'readChannelSTM' to
@@ -473,7 +473,7 @@ subscribeChanWith conn topics (Just chan) = do
       forever $
         atomically $
           TChan.readTChan chan
-            >>= TChan.writeTChan outChan . ResetSubscriptions
+            >>= TChan.writeTChan outChan . flip ResetSubscriptions (pure ())
 
 -- | Same as 'subscribeChan' but can override defaults
 subscribeChanWith2 :: (HasCallStack) => Connection -> FilterSet -> Maybe (TChan.TChan SubscribeCmd) -> IO Channel
@@ -487,7 +487,7 @@ subscribeChanWith2 conn@Connection{connSettings} topics mTopicsChan =
       subChan <- TBMChan.newTBMChan (maxQueuedMessages connSettings)
       let sub = Subscription{subChan, subUpdater}
       chanRef <- newTVar subChan
-      sendReqs <- updateRoutingTree conn sub $ ResetSubscriptions topics
+      sendReqs <- updateRoutingTree conn sub $ ResetSubscriptions topics mempty
       putTMVar onReady ()
       pure (sub, chanRef, sendReqs)
     -- This finalizer is called reliably because it is attached to a TVar (See
@@ -501,19 +501,20 @@ subscribeChanWith2 conn@Connection{connSettings} topics mTopicsChan =
     updateSubscriptionsThread cmdsChan sub onReady = do
       atomically (takeTMVar onReady)
       forever $ do
-        sendRequests <- atomically $ do
-          cmd <- TChan.readTChan cmdsChan
-          updateRoutingTree conn sub cmd
+        sendRequests <-
+          atomically $
+            updateRoutingTree conn sub =<< TChan.readTChan cmdsChan
         sendRequests `catchAny` const (pure ())
 
     -- It is important that a finalizer never throws so catchAny
     onChannelGarbageCollected sub@Subscription{subUpdater} = handleAny (const (pure ())) $ do
       tracer connSettings $ ChannelGarbageCollected (brokerUri connSettings)
       cancel subUpdater
-      join $ atomically $ updateRoutingTree conn sub $ ResetSubscriptions mempty
+      sendRequests <- atomically $ updateRoutingTree conn sub $ ResetSubscriptions mempty mempty
+      sendRequests `catchAny` const (pure ())
 
 updateRoutingTree :: (HasCallStack) => Connection -> Subscription -> SubscribeCmd -> STM (IO ())
-updateRoutingTree conn@Connection{connRoutingTree} sub (ResetSubscriptions newFilters) = do
+updateRoutingTree conn@Connection{connRoutingTree} sub (ResetSubscriptions newFilters cb) = do
   routingTree <- readTVar connRoutingTree
   let fsBefore = filterTreeToSet routingTree
       fsAfter = filterTreeToSet routingTree'
@@ -535,14 +536,19 @@ updateRoutingTree conn@Connection{connRoutingTree} sub (ResetSubscriptions newFi
   pure $ do
     sendUnsubscribeRequests conn $ Map.toList (fsBefore `Map.difference` fsAfter)
     sendSubscribeRequests conn $ Map.toList (fsAfter `Map.difference` fsBefore)
-updateRoutingTree conn@Connection{connRoutingTree} sub (Subscribe t o ps) = do
+    cb
+updateRoutingTree conn@Connection{connRoutingTree} sub (Subscribe t o ps cb) = do
   needsSubscribe <- not . FT.member t <$> readTVar connRoutingTree
   modifyTVar' connRoutingTree (insertIntoRoutingTree t sub o ps)
-  pure $ when needsSubscribe $ sendSubscribeRequests conn [(t, (o, ps))]
-updateRoutingTree conn@Connection{connRoutingTree} sub (Unsubscribe t ps) = do
+  pure $ do
+    when needsSubscribe $ sendSubscribeRequests conn [(t, (o, ps))]
+    cb
+updateRoutingTree conn@Connection{connRoutingTree} sub (Unsubscribe t ps cb) = do
   modifyTVar' connRoutingTree (FT.update upd t)
   needsUnsubscribe <- not . FT.member t <$> readTVar connRoutingTree
-  pure $ when needsUnsubscribe $ sendUnsubscribeRequests conn [(t, (MQTT.subOptions {-dummy-}, ps))]
+  pure $ do
+    when needsUnsubscribe $ sendUnsubscribeRequests conn [(t, (MQTT.subOptions {-dummy-}, ps))]
+    cb
   where
     upd re
       | Set.null subs' = Nothing
@@ -571,7 +577,7 @@ insertIntoRoutingTree t sub subOpts subProps =
       RoutingEntry
         { reSubs = subs `Set.union` subs'
         , reSubOptions = os `combineSubOpts` os'
-        , reSubProps = L.nub (ps <> ps')
+        , reSubProps = L.nubOrd (ps <> ps')
         }
     combineSubOpts _ a = a -- FIXME
 
@@ -579,7 +585,7 @@ subChunkSize :: Int
 subChunkSize = 8 -- Max size supported by AWS IoT
 
 sendSubscribeRequests :: (HasCallStack) => Connection -> [(Filter, (SubOptions, [Property]))] -> IO ()
-sendSubscribeRequests conn@Connection{connSettings} allReqs =
+sendSubscribeRequests conn@Connection{connSettings} allReqs = do
   withClient conn $ \c ->
     sendSubscribeRequests2 connSettings c allReqs
 
@@ -686,9 +692,7 @@ newConnection connSettings = do
     connect connRoutingTree = do
       tracer connSettings (Connecting uri)
       will <- lwt connSettings
-      flip
-        MQTT.connectURI
-        uri
+      MQTT.connectURI
         MQTT.mqttConfig
           { MQTT._cleanSession = cleanSession connSettings
           , MQTT._username = username connSettings
@@ -705,13 +709,14 @@ newConnection connSettings = do
           , MQTT._pingPeriod = pingPeriod connSettings
           , MQTT._pingPatience = pingPatience connSettings
           }
+        uri
 
     -- This linked async thread loops forever waiting until the TMVar is empty and
     -- fills it in. It must be the the only producer of the TMVar, else deadlock.
     keepConnected :: TVar (IO ()) -> TVar RoutingTree -> TMVar Client -> IO ()
     keepConnected connOnConnectListeners connRoutingTree clientRef = fix $ \loop -> do
-      ( atomically $
-          takeTMVar clientRef >>= \case
+      atomically
+        ( takeTMVar clientRef >>= \case
             Open client -> do
               -- The following 'check' blocks (retrying inside STM) until the connection goes down
               check . not =<< MQTT.isConnectedSTM client
@@ -847,7 +852,7 @@ closeConnectionWith
 withConnection :: (MonadMask m, MonadIO m) => Settings -> (Connection -> m a) -> m a
 withConnection x f = mask $ \restore ->
   liftIO (newConnection x) >>= \conn ->
-    (restore (f conn) `onException` (liftIO (closeConnectionWith Nothing conn)))
+    restore (f conn) `onException` liftIO (closeConnectionWith Nothing conn)
       <* liftIO (closeConnection conn)
 
 -- | Is the connection to the MQTT broker up?
@@ -908,7 +913,7 @@ publish conn a b c d e =
 withClient :: (HasCallStack) => Connection -> (MQTT.MQTTClient -> IO a) -> IO a
 withClient Connection{connClientRef, connSettings} f = do
   timedOutRef <- maybe (newTVarIO False) registerDelay (pubSubTimeout connSettings)
-  join $ flip catch blockedIndefToClosedConnErr $ atomically $ do
+  join $ handle blockedIndefToClosedConnErr $ atomically $ do
     timedOut <- readTVar timedOutRef
     when timedOut $
       throwSTM pubSubTimeoutError

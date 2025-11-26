@@ -3,6 +3,11 @@
 ## 0.3.6.0 -- 2023-12-31
 * First public version
 
+## 0.3.8.0
+* Changed interface of 'SubscribeCmd' to allow passing a callback that will get
+  called when the SUBSCRIBE and UNSUBSCRIBE requestes have been acknowledged by
+  the broker.
+
 ## 0.3.7.0
 * Add Wunused-packages to the list of warnings
 * Add username and password to the Settings
