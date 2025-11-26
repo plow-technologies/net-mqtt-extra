@@ -1,11 +1,9 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -307,7 +305,7 @@ traceTestConnection tracer f = do
 
 type MosquittoHandle = Process () Handle Handle
 
-killMosquitto :: MonadIO m => MosquittoHandle -> m ()
+killMosquitto :: (MonadIO m) => MosquittoHandle -> m ()
 killMosquitto h =
   liftIO $ do
     getPid (unsafeProcessHandle h) >>= mapM_ (signalProcess sigTERM)

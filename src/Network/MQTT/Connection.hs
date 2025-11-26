@@ -6,7 +6,6 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecursiveDo #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- |
@@ -92,6 +91,7 @@ import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.STM
 import Control.Retry
 import qualified Data.ByteString.Lazy.Char8 as BL
+import Data.Default.Class (def)
 import Data.Function (fix, on)
 import qualified Data.HashSet as Set
 import Data.Hashable (Hashable (..))
@@ -185,7 +185,7 @@ defaultSettings brokerUri =
       protocol = Protocol50,
       connProps = mempty,
       connectTimeout = 10_000_000,
-      tlsSettings = TLSSettingsSimple False False False,
+      tlsSettings = TLSSettingsSimple False False False def,
       connectRetryPolicy = constantDelay 30_000_000,
       tracer = printConnectionTrace,
       failFast = False,
@@ -285,7 +285,7 @@ showConnectionTrace = \case
   DroppedIncomingMessage uri topic reason -> "Dropped an incoming message to " <> tshow (unTopic topic) <> " at " <> tshow uri <> " because " <> tshow reason
   ReconnectThreadStopped uri reason -> "Reconnect thread at " <> tshow uri <> "has stopped because " <> tshow reason
   where
-    tshow :: Show a => a -> T.Text
+    tshow :: (Show a) => a -> T.Text
     tshow = T.pack . show
 
 printLock :: MVar ()
@@ -417,20 +417,20 @@ readChannelSTM = readTVar . unChannel >=> TBMChan.readTBMChan
 -- For a non-blocking version use 'withAsyncSubscribe' for a version that spawns an
 -- 'Async' thread.
 -- If the given callback throws an exception no more messages will be processed
-subscribe :: HasCallStack => Connection -> Filter -> (PublishRequest -> IO ()) -> IO ()
+subscribe :: (HasCallStack) => Connection -> Filter -> (PublishRequest -> IO ()) -> IO ()
 subscribe conn topic f = do
   chan <- subscribeChanWith conn (Map.singleton topic (MQTT.subOptions, [])) Nothing
   fix $ \loop -> readChannel chan >>= maybe (pure ()) (\pr -> f pr >> loop)
 
 -- | Same as 'subscribe' but can override defaults
-subscribeWith :: HasCallStack => IO () -> Connection -> FilterSet -> Maybe (TChan.TChan FilterSet) -> (PublishRequest -> IO ()) -> IO ()
+subscribeWith :: (HasCallStack) => IO () -> Connection -> FilterSet -> Maybe (TChan.TChan FilterSet) -> (PublishRequest -> IO ()) -> IO ()
 subscribeWith onSubscribed conn topics topicsChan f = do
   chan <- subscribeChanWith conn topics topicsChan
   onSubscribed
   fix $ \loop -> readChannel chan >>= maybe (pure ()) (\pr -> f pr >> loop)
 
 -- | Same as 'subscribe' but can override defaults
-subscribeWith2 :: HasCallStack => IO () -> Connection -> FilterSet -> Maybe (TChan.TChan SubscribeCmd) -> (PublishRequest -> IO ()) -> IO ()
+subscribeWith2 :: (HasCallStack) => IO () -> Connection -> FilterSet -> Maybe (TChan.TChan SubscribeCmd) -> (PublishRequest -> IO ()) -> IO ()
 subscribeWith2 onSubscribed conn topics cmdsChan f = do
   chan <- subscribeChanWith2 conn topics cmdsChan
   onSubscribed
@@ -450,11 +450,11 @@ subscribeWith2 onSubscribed conn topics cmdsChan f = do
 --   where
 --     loop = liftIO (readChannel ch) >>= maybe (pure ()) (\x -> yield x >> loop)
 -- @
-subscribeChan :: HasCallStack => Connection -> Filter -> IO Channel
+subscribeChan :: (HasCallStack) => Connection -> Filter -> IO Channel
 subscribeChan conn topic = subscribeChanWith conn (Map.singleton topic (MQTT.subOptions, [])) Nothing
 
 -- | Same as 'subscribeChan' but can override defaults
-subscribeChanWith :: HasCallStack => Connection -> FilterSet -> Maybe (TChan.TChan FilterSet) -> IO Channel
+subscribeChanWith :: (HasCallStack) => Connection -> FilterSet -> Maybe (TChan.TChan FilterSet) -> IO Channel
 subscribeChanWith conn topics Nothing = subscribeChanWith2 conn topics Nothing
 subscribeChanWith conn topics (Just chan) = do
   chan2 <- TChan.newTChanIO
@@ -470,7 +470,7 @@ subscribeChanWith conn topics (Just chan) = do
             >>= TChan.writeTChan outChan . ResetSubscriptions
 
 -- | Same as 'subscribeChan' but can override defaults
-subscribeChanWith2 :: HasCallStack => Connection -> FilterSet -> Maybe (TChan.TChan SubscribeCmd) -> IO Channel
+subscribeChanWith2 :: (HasCallStack) => Connection -> FilterSet -> Maybe (TChan.TChan SubscribeCmd) -> IO Channel
 subscribeChanWith2 conn@Connection {connSettings} topics mTopicsChan =
   uninterruptibleMask $ \restore -> mdo
     onReady <- newEmptyTMVarIO
@@ -506,7 +506,7 @@ subscribeChanWith2 conn@Connection {connSettings} topics mTopicsChan =
       cancel subUpdater
       join $ atomically $ updateRoutingTree conn sub $ ResetSubscriptions mempty
 
-updateRoutingTree :: HasCallStack => Connection -> Subscription -> SubscribeCmd -> STM (IO ())
+updateRoutingTree :: (HasCallStack) => Connection -> Subscription -> SubscribeCmd -> STM (IO ())
 updateRoutingTree conn@Connection {connRoutingTree} sub (ResetSubscriptions newFilters) = do
   routingTree <- readTVar connRoutingTree
   let fsBefore = filterTreeToSet routingTree
@@ -572,7 +572,7 @@ insertIntoRoutingTree t sub subOpts subProps =
 subChunkSize :: Int
 subChunkSize = 8 -- Max size supported by AWS IoT
 
-sendSubscribeRequests :: HasCallStack => Connection -> [(Filter, (SubOptions, [Property]))] -> IO ()
+sendSubscribeRequests :: (HasCallStack) => Connection -> [(Filter, (SubOptions, [Property]))] -> IO ()
 sendSubscribeRequests conn@Connection {connSettings} allReqs =
   withClient conn $ \c ->
     sendSubscribeRequests2 connSettings c allReqs
@@ -587,7 +587,7 @@ sendSubscribeRequests2 connSettings client allReqs = do
       res <- MQTT.subscribe client topOpts subProps
       tracer connSettings $ Subscribed (brokerUri connSettings) (map fst topOpts) res
 
-sendUnsubscribeRequests :: HasCallStack => Connection -> [(Filter, (SubOptions, [Property]))] -> IO ()
+sendUnsubscribeRequests :: (HasCallStack) => Connection -> [(Filter, (SubOptions, [Property]))] -> IO ()
 sendUnsubscribeRequests conn@Connection {connSettings} allReqs = do
   let groupedReqs = NE.groupAllWith (\(_, (_, ps)) -> show ps) allReqs
   forM_ groupedReqs $ \reqs@((_, (_, subProps)) NE.:| _) ->
@@ -607,7 +607,7 @@ filterListToSet = Map.fromList . map (\(a, re) -> (a, (reSubOptions re, reSubPro
 
 -- | Same as 'withAsyncSubscribe' but can override defaults
 withAsyncSubscribeWith ::
-  HasCallStack =>
+  (HasCallStack) =>
   Connection ->
   FilterSet ->
   Maybe (TChan.TChan FilterSet) ->
@@ -624,7 +624,7 @@ withAsyncSubscribeWith conn topics topicsChan sub f = do
 
 -- | Same as 'withAsyncSubscribe' but can override defaults
 withAsyncSubscribeWith2 ::
-  HasCallStack =>
+  (HasCallStack) =>
   Connection ->
   FilterSet ->
   Maybe (TChan.TChan SubscribeCmd) ->
@@ -779,7 +779,7 @@ newConnection connSettings = do
                _ -> True
            ]
 
-    logAndRetry :: Exception e => (e -> Bool) -> RetryStatus -> Handler IO Bool
+    logAndRetry :: (Exception e) => (e -> Bool) -> RetryStatus -> Handler IO Bool
     logAndRetry f rs = Handler $ \e ->
       if f e
         then do
@@ -857,7 +857,7 @@ isConnectedSTM Connection {connClientRef} = do
 -- the underlying MQTT connection is down until it is re-established. Use
 -- 'isConnected' or 'isConnectedSTM' to detect if the connection is up
 publish ::
-  HasCallStack =>
+  (HasCallStack) =>
   -- | Connection
   Connection ->
   -- | Topic
@@ -897,7 +897,7 @@ publish conn a b c d e =
 -- 'ConnectionIsClosed' exception
 -- If 'pubSubTimeout' is not 'Nothing' an operation times out, a 'PubSubTimeout'
 -- error will be thrown
-withClient :: HasCallStack => Connection -> (MQTT.MQTTClient -> IO a) -> IO a
+withClient :: (HasCallStack) => Connection -> (MQTT.MQTTClient -> IO a) -> IO a
 withClient Connection {connClientRef, connSettings} f = do
   timedOutRef <- maybe (newTVarIO False) registerDelay (pubSubTimeout connSettings)
   join $ flip catch blockedIndefToClosedConnErr $ atomically $ do
